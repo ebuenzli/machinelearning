@@ -1,0 +1,98 @@
+---
+title: "Practical Machine Learning Course project"
+output: html_document
+---
+
+This document describes the process of predicting how a weight lifting exercise was performed using movement data. The data set is provided by http://groupware.les.inf.puc-rio.br/har
+
+## Preparing for the analysis
+
+First, all required libraries are loaded and the training and test data sets are read into data frames. 
+
+```{r,results='hide'}
+library(caret)
+library(randomForest)
+train <- read.csv("pml-training.csv")
+test <- read.csv("pml-testing.csv")
+```
+
+Exploratory data analysis reveals 160 variables and 19622 observations. I remove those columns that are not relevant predictors such as the time stamps, the name of the person, and window variables. Furthermore, several predictors have NA or empty values and it turns out that for each of these about 99% of values are missing. Therefore there is no point in keeping them and they can be removed as predictors. This leaves 52 numerical variables as predictors plus the classe variable which is the outcome variable and has 5 different levels (A, B, C, D, E). The same columns are removed from the test set. 
+
+```{r,results='hide'}
+str(train)
+getnumna <- function(vector) {sum(is.na(vector))}
+getempty <- function(vector) {sum(vector == "")}
+numna <- apply(train,2,getnumna)
+numempty <- apply(train,2,getempty)
+badpred_ind <- which(numna > 10000 | numempty > 10000)
+newtrain <- train[,-c(1:7,badpred_ind)]
+newtest <- test[,-c(1:7,badpred_ind,160)]
+```
+
+All predictors are then normalized to have a mean of 0 and a standard deviation of 1. The same transformation is applied to the test set. (Note: this procedure could also be done using preProcess=c("center","scale") argument when training the model with caret. However, to keep open the options of using any method for training, the preprocessing is done independently prior to training.) No other transformations are applied to the data at this time. 
+
+```{r,results='hide'}
+classe <- newtrain[,53]
+newtrain <- as.data.frame(lapply(newtrain[,-53],as.numeric))
+means <- colMeans(newtrain)
+stdevs <- apply(newtrain,2,sd)
+normtrain <- sweep(newtrain,2,means,"-")
+normtrain <- sweep(normtrain,2,stdevs,"/")
+normtrain <- cbind(normtrain,classe)
+
+newtest <- as.data.frame(lapply(newtest,as.numeric))
+normtest <- sweep(newtest,2,means,"-")
+normtest <- sweep(normtest,2,stdevs,"/")
+```
+
+## Fitting the learning model
+
+I split off 30% of the sample to keep as separate test set to estimate the out-of-sample error and model accuracy. 
+
+```{r,results='hide'}
+set.seed(1234)
+sep <- createDataPartition(normtrain$classe,p=0.7,list=FALSE)
+finaltrain <- normtrain[sep,]
+finaltest <- normtrain[-sep,]
+```
+
+Working now only with 70% of the original trainig set, I use a random forest model with 10 trees only to keep computation time low. I use repeated k-fold cross validation (10 folds, 3 repeats) to tune the model parameter mtry, which is found to be best at 27.   
+
+```{r}
+set.seed(12345)
+train_control <- trainControl(method="repeatedcv", number=10, repeats=3)
+modelFit <- train(classe ~ .,data=finaltrain,method="rf", trControl=train_control,ntree=10)
+train_pred <- predict(modelFit, finaltrain[,-53])
+confusionMatrix(train_pred, finaltrain[,53])
+```
+
+The accuracy of the model fit on the training set is almost prefect (99.94%). It is therefore not necessary to try to optimize the model further or pick a different model. However, there may be some overfitting. 
+
+## Evaluation on the separate test set
+
+For the 30% of data that was split off and not used to tune any parameters, I use the model to predict the classe variable and compare to the actual values. This gives a measure of the out-of-sample error we can expect. 
+
+```{r}
+test_pred <- predict(modelFit, finaltest[,-53])
+confusionMatrix(test_pred, finaltest[,53])
+```
+
+The accuracy is still 98.95%, the out-of-sample error is therefore estimated to be only about 1%. The effects of overfitting are not very drastic and no further tuning of the model to reduce overfitting is required. We can expect very good performance on a blind test set. 
+
+## Prediction on the blind test set
+
+Finally, the blind test set is evaluated. 
+
+```{r,results='hide'}
+answers <- predict(modelFit, normtest)
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+pml_write_files(answers)
+```
+
+Indeed, upload to the Coursera submission system showed all 20 test cases to be classified correctly!
